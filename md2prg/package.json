@@ -1,0 +1,13 @@
+{
+  "name": "md2prg",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@msgpack/msgpack": "^3.0.0",
+    "@zip.js/zip.js": "^2.7.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
