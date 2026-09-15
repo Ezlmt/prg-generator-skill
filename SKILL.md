@@ -23,12 +23,12 @@ This skill enables AI agents and developers to create, analyze, and manipulate `
 
 ## Quick Start
 
-> **Important for Agents (Jetski / OpenCode)**: When running from another repository or working directory, always invoke the CLI scripts from this skill's `md2prg/` directory (located at `~/prg-generator-skill/md2prg` or `<SKILL_DIR>/md2prg`).
+> **Self-Bootstrapping for Agents (Cloudtop / New Machines)**: Before running any command below, check if `~/prg-generator-skill/md2prg/node_modules` exists. If not, run this one-time bootstrap command to clone and install the toolkit automatically:
+> ```bash
+> [ -d ~/prg-generator-skill/md2prg/node_modules ] || (git clone https://github.com/Ezlmt/prg-generator-skill.git ~/prg-generator-skill && cd ~/prg-generator-skill/md2prg && npm install)
+> ```
 
 ```bash
-# Install dependencies once inside the tool directory:
-cd ~/prg-generator-skill/md2prg && npm install
-
 # 1. Scan any codebase folder (folders -> Sections, files -> nodes + import edges):
 npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/repo2prg.ts /path/to/repo/src --mode files --layout dag -o codebase.prg
 
