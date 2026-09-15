@@ -23,22 +23,24 @@ This skill enables AI agents and developers to create, analyze, and manipulate `
 
 ## Quick Start
 
+> **Important for Agents (Jetski / OpenCode)**: When running from another repository or working directory, always invoke the CLI scripts from this skill's `md2prg/` directory (located at `~/prg-generator-skill/md2prg` or `<SKILL_DIR>/md2prg`).
+
 ```bash
 # Install dependencies once inside the tool directory:
-cd md2prg && npm install
+cd ~/prg-generator-skill/md2prg && npm install
 
-# 1. Scan a codebase folder (folders -> Sections, files -> nodes + import edges):
-npx tsx repo2prg.ts /path/to/repo/src --mode files --layout dag -o codebase.prg
+# 1. Scan any codebase folder (folders -> Sections, files -> nodes + import edges):
+npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/repo2prg.ts /path/to/repo/src --mode files --layout dag -o codebase.prg
 
 # 2. Scan a monorepo workspace (package.json / Cargo.toml dependencies):
-npx tsx repo2prg.ts /path/to/monorepo --mode packages -o architecture.prg
+npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/repo2prg.ts /path/to/monorepo --mode packages -o architecture.prg
 
 # 3. Compile an Enhanced Markdown document into a .prg file:
-npx tsx md2prg.ts architecture.md --layout dag --auto-color -o architecture.prg
+npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/md2prg.ts architecture.md --layout dag --auto-color -o architecture.prg
 
 # 4. Inspect or reverse-compile an existing .prg file into Markdown for AI reading:
-npx tsx prg-inspect.ts summary architecture.prg
-npx tsx prg-inspect.ts to-md architecture.prg -o exported.md
+npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/prg-inspect.ts summary architecture.prg
+npx --prefix ~/prg-generator-skill/md2prg tsx ~/prg-generator-skill/md2prg/prg-inspect.ts to-md architecture.prg -o exported.md
 ```
 
 ---
