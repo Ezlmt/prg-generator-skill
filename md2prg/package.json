@@ -1,7 +1,13 @@
 {
   "name": "md2prg",
+  "version": "2.7.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "md2prg": "tsx md2prg.ts",
+    "repo2prg": "tsx repo2prg.ts",
+    "inspect": "tsx prg-inspect.ts"
+  },
   "dependencies": {
     "@msgpack/msgpack": "^3.0.0",
     "@zip.js/zip.js": "^2.7.0"

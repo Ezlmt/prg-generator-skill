@@ -1,13 +1,26 @@
 import { randomUUID } from "node:crypto";
-import type { LayoutNode } from "./treeLayout.js";
+import type { ColorRGBA, InlineEdgeSpec } from "./markdownParse.js";
+import { SECTION_TITLE_BAR, type LayoutNode } from "./treeLayout.js";
 
-type StageObject = Record<string, unknown>;
+export type StageObject = Record<string, unknown>;
 
 export interface ExtraEdge {
   from: string;
   to: string;
   text?: string;
+  edgeType?: "line" | "arc";
+  lineType?: "solid" | "dashed";
+  offset?: number;
+  color?: ColorRGBA;
 }
+
+export interface CreatePrgOptions {
+  version?: string;
+  tags?: string[];
+  readme?: string;
+}
+
+export const LATEST_PRG_VERSION = "2.7.0";
 
 function roundToTwo(value: number): number {
   if (Number.isInteger(value)) {
@@ -16,125 +29,220 @@ function roundToTwo(value: number): number {
   return Number.parseFloat(value.toFixed(2));
 }
 
-function getNodeOrder(rootId: string, nodesById: Map<string, LayoutNode>): string[] {
-  const orderedIds: string[] = [];
+/**
+ * Positional constructor helpers — key insertion order MUST match class constructor parameters!
+ */
+export function makeVector(x: number, y: number): StageObject {
+  return {
+    _: "Vector",
+    x: roundToTwo(x),
+    y: roundToTwo(y),
+  };
+}
+
+export function makeColor(c?: ColorRGBA): StageObject {
+  if (!c) {
+    return { _: "Color", r: 0, g: 0, b: 0, a: 0 };
+  }
+  return {
+    _: "Color",
+    r: Math.round(c.r),
+    g: Math.round(c.g),
+    b: Math.round(c.b),
+    a: roundToTwo(c.a),
+  };
+}
+
+export function makeRectangle(x: number, y: number, w: number, h: number): StageObject {
+  return {
+    _: "Rectangle",
+    location: makeVector(x, y),
+    size: makeVector(w, h),
+  };
+}
+
+export function makeLine(x1: number, y1: number, x2: number, y2: number): StageObject {
+  return {
+    _: "Line",
+    start: makeVector(x1, y1),
+    end: makeVector(x2, y2),
+  };
+}
+
+export function makeCollisionBox(x: number, y: number, w: number, h: number): StageObject {
+  return {
+    _: "CollisionBox",
+    shapes: [makeRectangle(x, y, w, h)],
+  };
+}
+
+export function makeSectionNormalCollisionBox(x: number, y: number, w: number, h: number, hasTitle: boolean): StageObject {
+  const shapes: StageObject[] = [
+    makeLine(x, y, x + w, y),
+    makeLine(x + w, y, x + w, y + h),
+    makeLine(x + w, y + h, x, y + h),
+    makeLine(x, y + h, x, y),
+  ];
+  if (hasTitle) {
+    shapes.push(makeRectangle(x, y, w, SECTION_TITLE_BAR));
+  }
+  return {
+    _: "CollisionBox",
+    shapes,
+  };
+}
+
+/**
+ * Build stage objects in topological bottom-up order:
+ * 1. Non-Section entities (TextNode, UrlNode, LatexNode)
+ * 2. Section entities in post-order (innermost Sections first, outer Sections after)
+ *    so every child reference {"$": "/idx"} in Section.children points to an index < sectionIdx.
+ * 3. Tree edges (only from non-Section, non-synthetic-root parents to their children)
+ */
+export function buildStageFromLayout(rootId: string, nodesById: Map<string, LayoutNode>): StageObject[] {
+  const leafEntities: string[] = [];
+  const sectionPostOrder: string[] = [];
   const visited = new Set<string>();
 
-  const dfs = (nodeId: string): void => {
-    if (visited.has(nodeId)) {
+  const collectDfs = (nodeId: string): void => {
+    if (visited.has(nodeId)) return;
+    visited.add(nodeId);
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+
+    for (const childId of node.children) {
+      collectDfs(childId);
+    }
+
+    if (node.text === "__synthetic_root__") {
       return;
     }
-    const node = nodesById.get(nodeId);
-    if (!node) {
-      throw new Error(`Node not found while building stage order: ${nodeId}`);
-    }
-    visited.add(nodeId);
-    orderedIds.push(nodeId);
-    for (const childId of node.children) {
-      dfs(childId);
+
+    if (node.nodeType === "section") {
+      sectionPostOrder.push(nodeId);
+    } else {
+      leafEntities.push(nodeId);
     }
   };
 
-  dfs(rootId);
-
+  collectDfs(rootId);
   for (const [nodeId] of nodesById) {
     if (!visited.has(nodeId)) {
-      dfs(nodeId);
+      collectDfs(nodeId);
     }
   }
 
-  return orderedIds;
-}
-
-export function buildStageFromLayout(rootId: string, nodesById: Map<string, LayoutNode>): StageObject[] {
-  const orderedIds = getNodeOrder(rootId, nodesById);
+  const orderedEntityIds = [...leafEntities, ...sectionPostOrder];
   const stage: StageObject[] = [];
   const idToStageIndex = new Map<string, number>();
 
-  for (const nodeId of orderedIds) {
-    const node = nodesById.get(nodeId);
-    if (!node) {
-      throw new Error(`Node not found while building TextNode stage object: ${nodeId}`);
-    }
-
+  for (const nodeId of orderedEntityIds) {
+    const node = nodesById.get(nodeId)!;
     const stageIndex = stage.length;
     idToStageIndex.set(nodeId, stageIndex);
 
-    stage.push({
-      _: "TextNode",
-      uuid: node.id,
-      text: node.text,
-      collisionBox: {
-        _: "CollisionBox",
-        shapes: [
-          {
-            _: "Rectangle",
-            location: {
-              _: "Vector",
-              x: roundToTwo(node.x),
-              y: roundToTwo(node.y),
-            },
-            size: {
-              _: "Vector",
-              x: roundToTwo(node.width),
-              y: roundToTwo(node.height),
-            },
-          },
-        ],
-      },
-      color: {
-        _: "Color",
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-      },
-      fontScaleLevel: 0,
-      sizeAdjust: "auto",
-    });
+    if (node.nodeType === "section") {
+      const childRefs = node.children
+        .map((cid) => idToStageIndex.get(cid))
+        .filter((idx): idx is number => idx !== undefined)
+        .map((idx) => ({ $: `/${idx}` }));
+
+      const defaultSectionColor: ColorRGBA = node.color ?? { r: 56, g: 126, b: 177, a: 0.16 };
+
+      stage.push({
+        _: "Section",
+        details: node.details ?? [],
+        uuid: node.id,
+        _collisionBoxNormal: makeSectionNormalCollisionBox(
+          node.x,
+          node.y,
+          node.width,
+          node.height,
+          Boolean(node.text),
+        ),
+        color: makeColor(defaultSectionColor),
+        text: node.text,
+        children: childRefs,
+        isCollapsed: false,
+        isHidden: false,
+        locked: false,
+        borderStyle: node.borderStyle ?? "solid",
+      });
+    } else if (node.nodeType === "url") {
+      stage.push({
+        _: "UrlNode",
+        details: node.details ?? [],
+        uuid: node.id,
+        title: node.text,
+        url: node.url ?? "https://",
+        color: makeColor(node.color),
+        collisionBox: makeCollisionBox(node.x, node.y, node.width, node.height),
+      });
+    } else if (node.nodeType === "latex") {
+      stage.push({
+        _: "LatexNode",
+        details: node.details ?? [],
+        uuid: node.id,
+        latexSource: node.text,
+        collisionBox: makeCollisionBox(node.x, node.y, node.width, node.height),
+        color: makeColor(node.color),
+        fontScaleLevel: node.fontScaleLevel ?? 0,
+      });
+    } else {
+      stage.push({
+        _: "TextNode",
+        details: node.details ?? [],
+        uuid: node.id,
+        text: node.text,
+        collisionBox: makeCollisionBox(node.x, node.y, node.width, node.height),
+        color: makeColor(node.color),
+        fontScaleLevel: node.fontScaleLevel ?? 0,
+        sizeAdjust: "auto",
+        fontFamily: "",
+        fontWeight: "",
+        borderStyle: node.borderStyle ?? "solid",
+      });
+    }
   }
 
-  for (const nodeId of orderedIds) {
-    const node = nodesById.get(nodeId);
-    if (!node) {
-      throw new Error(`Node not found while building LineEdge stage object: ${nodeId}`);
+  // Tree edges (only emitted when parent is a non-Section entity and not synthetic root)
+  for (const nodeId of orderedEntityIds) {
+    const node = nodesById.get(nodeId)!;
+    if (node.nodeType === "section" || node.text === "__synthetic_root__") {
+      continue;
     }
+
     const sourceIndex = idToStageIndex.get(nodeId);
-    if (sourceIndex === undefined) {
-      throw new Error(`Source index not found for node: ${nodeId}`);
-    }
+    if (sourceIndex === undefined) continue;
 
     for (const childId of node.children) {
       const targetIndex = idToStageIndex.get(childId);
-      if (targetIndex === undefined) {
-        throw new Error(`Target index not found for child node: ${childId}`);
-      }
+      if (targetIndex === undefined) continue;
 
       stage.push({
         _: "LineEdge",
+        associationList: [{ $: `/${sourceIndex}` }, { $: `/${targetIndex}` }],
+        color: makeColor(),
+        targetRectangleRate: makeVector(0.01, 0.5),
+        sourceRectangleRate: makeVector(0.99, 0.5),
         uuid: randomUUID(),
         text: "",
-        color: {
-          _: "Color",
-          r: 0,
-          g: 0,
-          b: 0,
-          a: 0,
-        },
         lineType: "solid",
-        associationList: [{ $: `/${sourceIndex}` }, { $: `/${targetIndex}` }],
-        sourceRectangleRate: {
-          _: "Vector",
-          x: roundToTwo(0.99),
-          y: roundToTwo(0.5),
-        },
-        targetRectangleRate: {
-          _: "Vector",
-          x: roundToTwo(0.01),
-          y: roundToTwo(0.5),
-        },
+        arrowType: "default",
       });
     }
+  }
+
+  // Also add any inline edges discovered during Markdown parsing
+  const inlineEdges: InlineEdgeSpec[] = [];
+  for (const nodeId of orderedEntityIds) {
+    const node = nodesById.get(nodeId)!;
+    if (node.inlineEdges && node.inlineEdges.length > 0) {
+      inlineEdges.push(...node.inlineEdges);
+    }
+  }
+  if (inlineEdges.length > 0) {
+    addExtraEdgesToStage(stage, inlineEdges);
   }
 
   return stage;
@@ -142,19 +250,23 @@ export function buildStageFromLayout(rootId: string, nodesById: Map<string, Layo
 
 /**
  * Add extra (non-tree) edges to an existing stage array.
- * Matches nodes by their text field. Uses center-to-center direction (0.5, 0.5)
- * so the app treats them as "unknown direction" — visually distinct from tree edges.
+ * Matches nodes (TextNode, Section, UrlNode, LatexNode) by their display title/text field.
+ * Supports both LineEdge and ArcEdge (curved edges that avoid overlapping).
  */
 export function addExtraEdgesToStage(stage: StageObject[], extraEdges: ExtraEdge[]): void {
-  // Build title → stageIndex mapping
   const titleToIndex = new Map<string, number>();
   for (let i = 0; i < stage.length; i++) {
     const obj = stage[i];
-    if (obj._ === "TextNode" && typeof obj.text === "string") {
-      // If multiple nodes share the same title, the first one wins
-      if (!titleToIndex.has(obj.text)) {
-        titleToIndex.set(obj.text, i);
-      }
+    const label =
+      typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.title === "string"
+          ? obj.title
+          : typeof obj.latexSource === "string"
+            ? obj.latexSource
+            : undefined;
+    if (label && !titleToIndex.has(label)) {
+      titleToIndex.set(label, i);
     }
   }
 
@@ -171,34 +283,37 @@ export function addExtraEdgesToStage(stage: StageObject[], extraEdges: ExtraEdge
       continue;
     }
 
-    stage.push({
-      _: "LineEdge",
-      uuid: randomUUID(),
-      text: edge.text ?? "",
-      color: {
-        _: "Color",
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-      },
-      lineType: "solid",
-      associationList: [{ $: `/${fromIndex}` }, { $: `/${toIndex}` }],
-      sourceRectangleRate: {
-        _: "Vector",
-        x: 0.5,
-        y: 0.5,
-      },
-      targetRectangleRate: {
-        _: "Vector",
-        x: 0.5,
-        y: 0.5,
-      },
-    });
+    if (edge.edgeType === "arc" || (edge.offset !== undefined && edge.offset !== 0)) {
+      stage.push({
+        _: "ArcEdge",
+        associationList: [{ $: `/${fromIndex}` }, { $: `/${toIndex}` }],
+        color: makeColor(edge.color),
+        targetRectangleRate: makeVector(0.5, 0.5),
+        sourceRectangleRate: makeVector(0.5, 0.5),
+        uuid: randomUUID(),
+        text: edge.text ?? "",
+        lineType: edge.lineType ?? "solid",
+        arrowType: "default",
+        offset: roundToTwo(edge.offset ?? 60),
+        textPosition: 0.5,
+      });
+    } else {
+      stage.push({
+        _: "LineEdge",
+        associationList: [{ $: `/${fromIndex}` }, { $: `/${toIndex}` }],
+        color: makeColor(edge.color),
+        targetRectangleRate: makeVector(0.5, 0.5),
+        sourceRectangleRate: makeVector(0.5, 0.5),
+        uuid: randomUUID(),
+        text: edge.text ?? "",
+        lineType: edge.lineType ?? "solid",
+        arrowType: "default",
+      });
+    }
   }
 }
 
-export async function createPrgFile(stage: StageObject[]): Promise<Uint8Array> {
+export async function createPrgFile(stage: StageObject[], options: CreatePrgOptions = {}): Promise<Uint8Array> {
   let msgpack: typeof import("@msgpack/msgpack");
   let zip: typeof import("@zip.js/zip.js");
 
@@ -207,15 +322,16 @@ export async function createPrgFile(stage: StageObject[]): Promise<Uint8Array> {
     zip = await import("@zip.js/zip.js");
   } catch (error) {
     throw new Error(
-      `Missing runtime dependencies for .prg output. Install in tools/md2prg/: npm install. ${String(error)}`,
+      `Missing runtime dependencies for .prg output. Install in md2prg/: npm install. ${String(error)}`,
     );
   }
 
   const outputWriter = new zip.Uint8ArrayWriter();
-  const writer = new zip.ZipWriter(outputWriter);
+  // Explicitly use level: 0 (store uncompressed) to match Project Graph v2.7.0 save behavior
+  const writer = new zip.ZipWriter(outputWriter, { level: 0 });
 
-  await writer.add("stage.msgpack", new zip.Uint8ArrayReader(msgpack.encode(stage)));
-  await writer.add("tags.msgpack", new zip.Uint8ArrayReader(msgpack.encode([])));
+  await writer.add("stage.msgpack", new zip.Uint8ArrayReader(msgpack.encode(stage)), { level: 0 });
+  await writer.add("tags.msgpack", new zip.Uint8ArrayReader(msgpack.encode(options.tags ?? [])), { level: 0 });
   await writer.add(
     "reference.msgpack",
     new zip.Uint8ArrayReader(
@@ -224,15 +340,21 @@ export async function createPrgFile(stage: StageObject[]): Promise<Uint8Array> {
         files: [],
       }),
     ),
+    { level: 0 },
   );
   await writer.add(
     "metadata.msgpack",
     new zip.Uint8ArrayReader(
       msgpack.encode({
-        version: "18",
+        version: options.version ?? LATEST_PRG_VERSION,
       }),
     ),
+    { level: 0 },
   );
+
+  if (options.readme) {
+    await writer.add("README.md", new zip.Uint8ArrayReader(new TextEncoder().encode(options.readme)), { level: 0 });
+  }
 
   await writer.close();
   return outputWriter.getData();

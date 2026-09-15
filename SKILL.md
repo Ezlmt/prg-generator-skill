@@ -1,814 +1,330 @@
 ---
 name: prg-generator
-description: Generate Project Graph .prg files from code repositories, articles, or any structured data. Uses a two-phase approach (tree layout + extra edges) for high-quality automatic layout. Use this skill whenever you need to create, inspect, or manipulate .prg files for the Project Graph desktop application.
+description: Generate, inspect, and reverse-compile Project Graph v2.7.0 (.prg) visual graph files from code repositories, monorepos, Markdown documents, or structured data. Includes automated codebase/dependency scanner (repo2prg), Section-aware tree & DAG layout engines (md2prg), and .prg validator/decompiler (prg-inspect).
 license: MIT
 compatibility: opencode
 metadata:
   domain: graph-visualization
   project: project-graph
+  prgVersion: "2.7.0"
 ---
 
 ## Purpose
 
-This skill enables you to generate `.prg` files — the native file format for [Project Graph](https://github.com/graphif/project-graph), a desktop application for visual project graphs.
+This skill enables AI agents and developers to create, analyze, and manipulate `.prg` files — the native file format for [Project Graph](https://github.com/graphif/project-graph) (`v2.7.0`), a desktop node-graph tool for visual thinking, architecture design, and codebase exploration.
 
-**This skill is fully self-contained.** The `md2prg/` subdirectory inside this skill contains a complete CLI tool for converting Markdown → `.prg`. To share this skill, just copy the entire `prg-generator/` directory — no external dependencies needed beyond `npm install`.
+**This skill is 100% self-contained.** The `md2prg/` directory contains three zero-config TypeScript CLI tools:
 
-Common use cases:
+1. **`repo2prg.ts`** — **Automated Codebase & Monorepo Scanner**: Scans source directories or workspace packages (`package.json` / `Cargo.toml`), extracts folder hierarchies into nested `Section` containers, extracts file docstrings/exports into node `details`, resolves static `import` dependencies into directed edges (`LineEdge` / `ArcEdge`), and outputs a ready-to-open `.prg` (or editable intermediate Markdown).
+2. **`md2prg.ts`** — **Enhanced Markdown DSL → `.prg` Compiler**: Converts Markdown outlines with Section directives (`[section]`), semantic color tags (`#blue`, `#green`), rich node `details` (code blocks, notes), and inline or external edges into laid-out `.prg` files using either a **Section-aware Rightward Tree** (`--layout tree`) or a **Layered DAG** (`--layout dag`) algorithm.
+3. **`prg-inspect.ts`** — **`.prg` Inspector, Validator & Reverse-Compiler (`prg2md`)**: Summarizes any `.prg` file, validates `v2.7.0` schema & `$` pointer integrity, or decompiles an existing `.prg` file back into Markdown DSL so AI agents can read and edit human-authored graphs.
 
-- **Code repository analysis**: Convert folder/file/function/call structures into visual graphs
-- **Article/document parsing**: Extract concept relationships and render as graphs
-- **Dependency visualization**: Show package, module, or API dependencies
-- **Any structured data**: Convert hierarchical or relational data into `.prg` graphs
+---
 
 ## Quick Start
 
 ```bash
-# From this skill directory (where SKILL.md lives):
+# Install dependencies once inside the tool directory:
 cd md2prg && npm install
 
-# Convert Markdown to .prg
-npx tsx md2prg.ts input.md -o output.prg
+# 1. Scan a codebase folder (folders -> Sections, files -> nodes + import edges):
+npx tsx repo2prg.ts /path/to/repo/src --mode files --layout dag -o codebase.prg
 
-# With extra edges
-npx tsx md2prg.ts input.md --edges edges.json -o output.prg
+# 2. Scan a monorepo workspace (package.json / Cargo.toml dependencies):
+npx tsx repo2prg.ts /path/to/monorepo --mode packages -o architecture.prg
+
+# 3. Compile an Enhanced Markdown document into a .prg file:
+npx tsx md2prg.ts architecture.md --layout dag --auto-color -o architecture.prg
+
+# 4. Inspect or reverse-compile an existing .prg file into Markdown for AI reading:
+npx tsx prg-inspect.ts summary architecture.prg
+npx tsx prg-inspect.ts to-md architecture.prg -o exported.md
 ```
 
-## Architecture: Two-Phase Pipeline
+---
 
-Converting **any** data source to a well-laid-out `.prg` uses a three-step process:
+## Workflow 1: Analyzing a Code Repository (`repo2prg.ts`)
 
-```
-Source Data (code, docs, APIs, etc.)
-    │
-    ▼
-Step 1: Extract structure
-    ├── tree.md       ← Tree skeleton (Markdown headings)
-    └── edges.json    ← Extra non-tree edges
-    │
-    ▼
-Step 2: Layout
-    tree.md → autoLayoutRightwardTree → positioned nodes (JSON)
-    │
-    ▼
-Step 3: Merge & Package
-    positioned JSON + edges.json → .prg file
-```
+When asked to visualize or analyze an existing codebase or project directory, **always start with `repo2prg.ts`**.
 
-### Why This Approach?
+### Mode A: File & Import Graph (`--mode files`, default)
 
-- **Tree layout is predictable**: The rightward tree layout always produces clean, readable results
-- **Extra edges are free**: Non-tree edges are added on top without disturbing the layout
-- **Markdown is universal**: Any AI can generate Markdown headings — no complex graph DSL needed
-- **Handles cycles and multi-parent**: Non-tree edges can point anywhere, creating cycles or DAGs
-
-### Step 1: Extract a Spanning Tree + Extra Edges
-
-Given any source data, you must decompose it into:
-
-**a) `tree.md`** — A Markdown file where heading levels (`#`, `##`, `###`, ...) define parent-child relationships:
-
-```markdown
-# Main Module
-
-## Sub Module A
-
-### Component 1
-
-### Component 2
-
-## Sub Module B
-
-### Component 3
-```
-
-A synthetic "root" node is automatically created as parent of all `#` headings.
-
-**Spanning tree extraction strategies** (choose based on source):
-
-| Source Type      | Strategy                                             |
-| ---------------- | ---------------------------------------------------- |
-| File/folder tree | Direct mapping: folders → headings, nesting → levels |
-| Call graph       | BFS from entry point, first-visit parent wins        |
-| Dependency graph | Reverse-dependency tree from leaf packages           |
-| Concept map      | Choose the most central concept as root, BFS outward |
-| Class hierarchy  | Inheritance tree (base → derived)                    |
-
-**b) `edges.json`** — An array of extra edges NOT in the spanning tree:
-
-```json
-[
-  { "from": "Component 1", "to": "Component 3", "text": "calls" },
-  { "from": "Sub Module B", "to": "Sub Module A", "text": "depends on" }
-]
-```
-
-- `from` / `to`: Must match the **exact text** of a node (heading title) in `tree.md`
-- `text`: Optional edge label
-- These edges use center-to-center connection points (visually distinct from tree edges)
-
-### Step 2 & 3: Layout and Package
-
-Use the CLI tool in the `md2prg/` subdirectory of this skill:
+Scans source files (`.ts`, `.tsx`, `.js`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, etc.), ignores `node_modules`/`.git`/`dist`/`target`, and builds:
+- **Nested `Section` containers** for directories
+- **`TextNode`s** for source files, automatically populating `details` with line count, top doc-comment, and exported symbols (`export function/class/interface`, `pub fn/struct`, `def/class`)
+- **Directed edges** for static imports (`./relative` and `@/alias` imports). Bidirectional imports (`A ⇄ B`) are automatically rendered as curved `ArcEdge`s (`offset: 50`) so arrows never overlap.
 
 ```bash
-# Install deps (first time only, from this skill directory)
-cd md2prg && npm install
-
-# Tree only → .prg
-npx tsx md2prg.ts tree.md -o output.prg
-
-# Tree + extra edges → .prg
-npx tsx md2prg.ts tree.md --edges edges.json -o output.prg
-
-# Output JSON (for debugging)
-npx tsx md2prg.ts tree.md --edges edges.json -o output.json --json
-
-# Custom spacing
-npx tsx md2prg.ts tree.md --gap 200 --spacing 30 -o output.prg
+# Scan up to depth 3, output both .prg and editable intermediate Markdown:
+npx tsx repo2prg.ts /path/to/project/src \
+  --mode files \
+  --max-depth 3 \
+  --layout dag \
+  --emit-md /tmp/review.md \
+  -o /tmp/project-src.prg
 ```
+
+> **Pro Tip for AI Agents**: Use `--emit-md /tmp/review.md` first! You can then read `/tmp/review.md`, add high-level architectural notes or extra cross-cutting edges, and re-compile with `npx tsx md2prg.ts /tmp/review.md --layout dag -o final.prg`.
+
+### Mode B: Monorepo / Workspace Package Graph (`--mode packages`)
+
+Discovers workspace packages (`package.json` / `Cargo.toml`), groups them by top-level folder (`apps/`, `packages/`, `crates/`) into `Section`s, and connects internal workspace dependencies.
+
+```bash
+npx tsx repo2prg.ts /path/to/monorepo --mode packages -o monorepo.prg
+```
+
+---
+
+## Workflow 2: Authoring Graphs with Enhanced Markdown DSL (`md2prg.ts`)
+
+You can author rich architecture diagrams, concept maps, call graphs, or state machines using standard Markdown headings enhanced with directives and inline edges.
+
+### Markdown DSL Syntax Cheat Sheet
+
+```markdown
+# [section] System Architecture
+This top-level description becomes the Section's rich text details.
+
+## [section] Frontend Layer #blue
+
+### Web App #green
+Entry point: `src/main.tsx`
+- React 19 + Jotai state
+- Canvas 2D renderer
+-> API Gateway : HTTPS / REST
+~> Auth Service : OAuth2 PKCE [arc:60]
+
+### [url:https://graphif.dev/docs] Official Docs #cyan
+Click this UrlNode in Project Graph to open documentation.
+
+## [section] Backend Services #purple
+
+### API Gateway #orange #dashed
+Handles routing and rate limiting.
+<-> Auth Service : Token validation
+
+### Auth Service
+```ts
+export async function verifyToken(jwt: string): Promise<Session>
+```
+..> Redis Cache : Session lookup
+```
+
+### Heading Directives
+
+| Directive / Tag | Effect |
+| :--- | :--- |
+| `[section]` or `{section}` | Renders this heading as a visual **`Section` container** wrapping all its sub-headings |
+| `[url:https://...]` | Renders this heading as a clickable **`UrlNode`** card |
+| `[latex]` | Renders this heading as a **`LatexNode`** math formula |
+| `#blue`, `#green`, `#red`, `#yellow`, `#purple`, `#orange`, `#cyan`, `#gray` | Sets node/Section color from the built-in semantic palette |
+| `[color:#RRGGBB]` or `[color:r,g,b,a]` | Sets custom RGBA color |
+| `#dashed`, `#solid`, `#none` | Sets `borderStyle` (`"solid"` \| `"dashed"` \| `"none"`) |
+| `[scale:1]`, `[scale:-1]` | Sets `fontScaleLevel` (`fontSize = 32 * 2^(level/2)`) |
+
+### Body Content → Node `details` (Rich Text AST)
+
+Everything written in the body under a heading (paragraphs, bullet lists, fenced code blocks ```` ```ts ... ``` ````) is automatically converted into **PlateJS / Slate JSON AST (`details`)** attached to that node! When the user clicks or hovers the node in Project Graph, the full code snippet or documentation pops up.
+
+### Inline Edge Syntax (inside node body)
+
+You can declare non-tree edges directly inside the source node's body (or provide a separate `--edges edges.json` file):
+
+| Syntax | Edge Class & Style | Use Case |
+| :--- | :--- | :--- |
+| `-> Target Node : label` | Solid `LineEdge` | Standard call / dependency / flow |
+| `..> Target Node : label` | Dashed `LineEdge` (`lineType: "dashed"`) | Optional / async / weak dependency |
+| `~> Target Node : label` | Curved `ArcEdge` (`offset: 60`) | Cross-layer jumps or callbacks that might cross other nodes |
+| `~> Target Node : label [arc:-80]` | Curved `ArcEdge` with custom offset | Negative offset bends right; positive bends left |
+| `<-> Target Node : label` | Pair of opposite `ArcEdge`s (`+50` / `-50`) | **Bidirectional relationship** without overlapping lines |
+
+### `md2prg.ts` CLI Options
+
+```bash
+npx tsx md2prg.ts <input.md> [options]
 
 Options:
-
-- `-o, --output <file>`: Output path (default: input name + .prg)
-- `--json`: Output stage JSON instead of .prg
-- `--edges <file>`: Extra edges JSON file
-- `--gap <number>`: Horizontal gap between parent-child (default: 150)
-- `--spacing <number>`: Vertical spacing between siblings (default: 20)
-
-## .prg File Format Specification
-
-### File Structure
-
-A `.prg` file is a **ZIP archive** containing:
-
-```
-project.prg (ZIP)
-├── stage.msgpack        # Main graph data (nodes, edges, Sections)
-├── tags.msgpack         # Tag list: string[]
-├── reference.msgpack    # Reference relationships
-├── metadata.msgpack     # Metadata (version number, etc.)
-└── attachments/         # Attachment folder (images, etc.)
-    ├── {uuid}.png
-    └── {uuid}.jpg
+  -o, --output <file>       Output file path (default: <input>.prg)
+  --layout <tree|dag>       'tree' (rightward tree, default) or 'dag' (layered Kahn DAG)
+  --section-depth <number>  Auto-convert headings with children at depth <= N into Section containers
+  --auto-color              Automatically color-code top-level branches / Sections
+  --edges <file>            Extra edges JSON file: [{ "from": "A", "to": "B", "text": "...", "edgeType": "arc", "offset": 60 }]
+  --readme <file>           Embed a README.md file inside the .prg archive
+  --gap <number>            Horizontal gap between layers / parent-child (default: 150)
+  --spacing <number>        Vertical spacing between siblings (default: 24)
+  --json                    Output raw stage JSON array instead of .prg zip
 ```
 
-| File                | Format                         | Description                                                   |
-| ------------------- | ------------------------------ | ------------------------------------------------------------- |
-| `stage.msgpack`     | MessagePack-encoded JSON array | All graphical objects (nodes, edges, Sections)                |
-| `tags.msgpack`      | MessagePack-encoded string[]   | Project tag list                                              |
-| `reference.msgpack` | MessagePack-encoded object     | `{ sections: Record<string, string[]>, files: string[] }`     |
-| `metadata.msgpack`  | MessagePack-encoded object     | `{ version: string, createdAt?: string, updatedAt?: string }` |
+---
 
-### Metadata
+## Workflow 3: Inspecting & Reverse-Compiling `.prg` Files (`prg-inspect.ts`)
 
-```json
-{
-  "version": "18",
-  "createdAt": "2024-01-01T00:00:00.000Z",
-  "updatedAt": "2024-01-02T00:00:00.000Z"
-}
+Use `prg-inspect.ts` to read, debug, or validate any `.prg` file:
+
+```bash
+# 1. Summary of metadata version, object counts by class, and integrity status:
+npx tsx prg-inspect.ts summary diagram.prg
+
+# 2. Strict v2.7.0 schema validation (checks positional key order, $ references, UUIDs):
+npx tsx prg-inspect.ts validate diagram.prg
+
+# 3. Decompile a .prg file back into Markdown DSL (headings + [section] + details + -> edges):
+npx tsx prg-inspect.ts to-md diagram.prg -o decompiled.md
 ```
 
-Current file version: **18**. Always use `"18"` for the version field.
+---
 
-### Serialization Rules
+## Project Graph `v2.7.0` `.prg` File Format Specification
 
-#### Class Identifier `_`
+### 1. ZIP Container & Compression Rule
 
-Every serialized object has a `_` field identifying its class name:
+A `.prg` file is a ZIP archive containing MessagePack-encoded entries:
 
-```json
-{ "_": "TextNode", "uuid": "...", ... }
-{ "_": "Section", "uuid": "...", ... }
-{ "_": "LineEdge", "uuid": "...", ... }
+```
+project.prg (ZIP — MUST be stored with compression level: 0)
+├── stage.msgpack        # Main graph array: StageObject[]
+├── tags.msgpack         # Project tag list: string[]
+├── reference.msgpack    # Cross-file references: { sections: Record<string, string[]>, files: string[] }
+├── metadata.msgpack     # Metadata: { version: "2.7.0", extension?: ExtensionMetadata }
+├── README.md            # Optional project overview markdown
+└── attachments/         # Optional binary attachments ({uuid}.png, {uuid}.svg, etc.)
 ```
 
-#### Path Reference `$`
+> **CRITICAL (`level: 0`)**: Project Graph `v2.7.0` uses `@zip.js/zip.js` with `{ level: 0 }` (uncompressed store) on both `ZipWriter` and every `writer.add()` call to prevent UI freezes during save/load.
 
-To avoid circular references and duplicate data, use `$` for path references. Paths are slash-separated indices relative to the root stage array:
+> **CRITICAL (`metadata.version`)**: Always set `metadata.version` to `"2.7.0"` (SemVer string). Do **NOT** use legacy integer strings like `"18"` — `compareProjectVersions("18", "2.1.0")` treats `"18"` as major version `18 > 2`, causing `ProjectUpgrader` to skip all `2.0.0 → 2.7.0` migrations!
 
-```json
-// If stage array is [TextNode_A, TextNode_B, Section_C, LineEdge_D]
-// LineEdge_D connects A → B:
-{
-  "_": "LineEdge",
-  "associationList": [{ "$": "/0" }, { "$": "/1" }]
-}
-```
+---
 
-**CRITICAL**: The `$` path index refers to the position of the object in the root `stage` array.
+### 2. Serializer Rules (`@graphif/serializer`)
 
-#### Numeric Precision
+#### Class Identifier (`_`) & Path Reference (`$`)
+- Every serialized class instance has `"_"` set to its class name (`"TextNode"`, `"Section"`, `"LineEdge"`, `"ArcEdge"`, `"UrlNode"`, `"LatexNode"`, `"Vector"`, `"Color"`, `"Rectangle"`, `"CollisionBox"`, `"Line"`).
+- Objects decorated with `@id` (`uuid` field on entities/associations) are deduplicated by `serialize()`. The first occurrence in traversal order is serialized as a full object; subsequent occurrences become `{"$": "/path/from/root"}`.
+- **Canonical Ordering Rule for Generators**:
+  Place all leaf entities (`TextNode`, `UrlNode`, `LatexNode`) first in the root `stage` array (`index 0 .. N-1`), followed by `Section` containers in bottom-up post-order (innermost child Sections before outer parent Sections), followed by edges (`LineEdge`, `ArcEdge`).
+  This guarantees that every entity's first occurrence is at root path `"/i"`, so `Section.children` and `Edge.associationList` simply use `[{"$": "/i"}]`.
 
-Float values are serialized with 2 decimal places.
+#### CRITICAL: Positional Key Ordering for Value Types
+In `@graphif/serializer`, entity classes (`TextNode`, `Section`, `LineEdge`, etc.) have `@passObject` (they receive the JSON object as named options).
+**However, geometry and value classes (`Vector`, `Color`, `Rectangle`, `Line`, `CollisionBox`) do NOT have `@passObject`!** During deserialization (`_deserialize`), their constructor arguments are collected via `for (const key in json)` — which iterates JSON keys in **insertion order**!
 
-### Core Data Types
+Therefore, JSON key order in these objects is **strictly mandatory**:
+- **`Vector`**: `{"_": "Vector", "x": 100, "y": 200}` (`x` MUST precede `y`)
+- **`Color`**: `{"_": "Color", "r": 56, "g": 126, "b": 177, "a": 1}` (`r`, `g`, `b`, `a` in exact order; `a: 0` means transparent / default theme color)
+- **`Rectangle`**: `{"_": "Rectangle", "location": Vector, "size": Vector}` (`location` MUST precede `size`)
+- **`Line`**: `{"_": "Line", "start": Vector, "end": Vector}` (`start` MUST precede `end`)
+- **`CollisionBox`**: `{"_": "CollisionBox", "shapes": [...]}`
 
-#### Vector (2D vector)
+---
 
-```json
-{ "_": "Vector", "x": 100.5, "y": 200.3 }
-```
+### 3. Stage Object Schemas (`v2.7.0`)
 
-#### Color (RGBA)
-
-```json
-{ "_": "Color", "r": 255, "g": 200, "b": 100, "a": 1 }
-```
-
-Use `a: 0` for default color (the app will apply its theme color).
-
-#### Rectangle
-
-```json
-{
-  "_": "Rectangle",
-  "location": { "_": "Vector", "x": 100, "y": 200 },
-  "size": { "_": "Vector", "x": 150, "y": 50 }
-}
-```
-
-`location` is the top-left corner. `size.x` = width, `size.y` = height.
-
-#### CollisionBox
-
-```json
-{
-  "_": "CollisionBox",
-  "shapes": [
-    { "_": "Rectangle", "location": {...}, "size": {...} }
-  ]
-}
-```
-
-### TextNode (Text Node)
-
+#### `TextNode`
 ```json
 {
   "_": "TextNode",
+  "details": [
+    { "type": "p", "children": [{ "text": "Detailed notes or docstring..." }] }
+  ],
   "uuid": "550e8400-e29b-41d4-a716-446655440000",
-  "text": "functionName()",
+  "text": "AuthService.ts",
   "collisionBox": {
     "_": "CollisionBox",
     "shapes": [
       {
         "_": "Rectangle",
-        "location": { "_": "Vector", "x": 100, "y": 200 },
-        "size": { "_": "Vector", "x": 150, "y": 76 }
+        "location": { "_": "Vector", "x": -120, "y": -38 },
+        "size": { "_": "Vector", "x": 280, "y": 76 }
       }
     ]
   },
-  "color": { "_": "Color", "r": 0, "g": 0, "b": 0, "a": 0 },
+  "color": { "_": "Color", "r": 56, "g": 126, "b": 177, "a": 1 },
   "fontScaleLevel": 0,
-  "sizeAdjust": "auto"
+  "sizeAdjust": "auto",
+  "fontFamily": "",
+  "fontWeight": "",
+  "borderStyle": "solid"
 }
 ```
 
-| Field            | Type                   | Description                                           |
-| ---------------- | ---------------------- | ----------------------------------------------------- |
-| `uuid`           | string                 | Unique ID, use `crypto.randomUUID()`                  |
-| `text`           | string                 | Display text                                          |
-| `collisionBox`   | CollisionBox           | Position and size                                     |
-| `color`          | Color                  | Background color; `a=0` means use default theme color |
-| `fontScaleLevel` | number                 | Font scale: 0=default, formula: `fontSize * 2^level`  |
-| `sizeAdjust`     | `"auto"` \| `"manual"` | Size adjustment mode                                  |
-
-### Section (Container/Group)
-
+#### `Section` (Container / Group)
 ```json
 {
   "_": "Section",
+  "details": [],
   "uuid": "550e8400-e29b-41d4-a716-446655440001",
+  "_collisionBoxNormal": {
+    "_": "CollisionBox",
+    "shapes": [
+      { "_": "Line", "start": { "_": "Vector", "x": -200, "y": -150 }, "end": { "_": "Vector", "x": 200, "y": -150 } },
+      { "_": "Line", "start": { "_": "Vector", "x": 200, "y": -150 }, "end": { "_": "Vector", "x": 200, "y": 150 } },
+      { "_": "Line", "start": { "_": "Vector", "x": 200, "y": 150 }, "end": { "_": "Vector", "x": -200, "y": 150 } },
+      { "_": "Line", "start": { "_": "Vector", "x": -200, "y": 150 }, "end": { "_": "Vector", "x": -200, "y": -150 } },
+      { "_": "Rectangle", "location": { "_": "Vector", "x": -200, "y": -150 }, "size": { "_": "Vector", "x": 400, "y": 50 } }
+    ]
+  },
+  "color": { "_": "Color", "r": 56, "g": 126, "b": 177, "a": 0.18 },
   "text": "src/core/",
+  "children": [{ "$": "/0" }, { "$": "/1" }],
+  "isCollapsed": false,
+  "isHidden": false,
+  "locked": false,
+  "borderStyle": "solid"
+}
+```
+- **Important**: Do **not** create `LineEdge`s between a `Section` and its own `children` — visual containment inside the Section box represents membership.
+
+#### `UrlNode`
+```json
+{
+  "_": "UrlNode",
+  "details": [],
+  "uuid": "550e8400-e29b-41d4-a716-446655440002",
+  "title": "PRG Specification",
+  "url": "https://graphif.dev/docs/spec/prg",
+  "color": { "_": "Color", "r": 0, "g": 0, "b": 0, "a": 0 },
   "collisionBox": {
     "_": "CollisionBox",
     "shapes": [
       {
         "_": "Rectangle",
-        "location": { "_": "Vector", "x": 50, "y": 50 },
-        "size": { "_": "Vector", "x": 500, "y": 400 }
+        "location": { "_": "Vector", "x": 100, "y": 100 },
+        "size": { "_": "Vector", "x": 320, "y": 150 }
       }
     ]
-  },
-  "color": { "_": "Color", "r": 100, "g": 150, "b": 200, "a": 0.3 },
-  "children": [{ "$": "/0" }, { "$": "/1" }],
-  "isCollapsed": false,
-  "locked": false
+  }
 }
 ```
 
-### LineEdge (Connection/Arrow)
-
+#### `LineEdge` & `ArcEdge`
 ```json
+// Straight edge (LineEdge):
 {
   "_": "LineEdge",
-  "uuid": "550e8400-e29b-41d4-a716-446655440002",
-  "text": "calls",
+  "associationList": [{ "$": "/0" }, { "$": "/1" }],
   "color": { "_": "Color", "r": 0, "g": 0, "b": 0, "a": 0 },
-  "lineType": "solid",
-  "associationList": [{ "$": "/0" }, { "$": "/3" }],
+  "targetRectangleRate": { "_": "Vector", "x": 0.01, "y": 0.5 },
   "sourceRectangleRate": { "_": "Vector", "x": 0.99, "y": 0.5 },
-  "targetRectangleRate": { "_": "Vector", "x": 0.5, "y": 0.5 }
+  "uuid": "550e8400-e29b-41d4-a716-446655440003",
+  "text": "calls",
+  "lineType": "solid",
+  "arrowType": "default"
+}
+
+// Curved arc edge (ArcEdge — ideal for bidirectional links A ⇄ B or cross-layer jumps):
+{
+  "_": "ArcEdge",
+  "associationList": [{ "$": "/1" }, { "$": "/0" }],
+  "color": { "_": "Color", "r": 56, "g": 126, "b": 177, "a": 1 },
+  "targetRectangleRate": { "_": "Vector", "x": 0.5, "y": 0.5 },
+  "sourceRectangleRate": { "_": "Vector", "x": 0.5, "y": 0.5 },
+  "uuid": "550e8400-e29b-41d4-a716-446655440004",
+  "text": "callback",
+  "lineType": "solid",
+  "arrowType": "default",
+  "offset": 60,
+  "textPosition": 0.5
 }
 ```
-
-| Field                 | Type                     | Description                                   |
-| --------------------- | ------------------------ | --------------------------------------------- |
-| `uuid`                | string                   | Unique ID                                     |
-| `text`                | string                   | Label text                                    |
-| `color`               | Color                    | Line color; `a=0` means use default           |
-| `lineType`            | `"solid"` \| `"dashed"`  | Line style                                    |
-| `associationList`     | [source_ref, target_ref] | `[0]`=source, `[1]`=target                    |
-| `sourceRectangleRate` | Vector                   | Start point relative position on source (0~1) |
-| `targetRectangleRate` | Vector                   | End point relative position on target (0~1)   |
-
-**Edge direction conventions:**
-
-- **Tree edges** (parent→child): `source=(0.99, 0.5)`, `target=(0.01, 0.5)` — right side to left side
-- **Extra edges** (non-tree): `source=(0.5, 0.5)`, `target=(0.5, 0.5)` — center to center
-
-### Coordinate System
-
-- Origin (0, 0) at canvas center
-- X axis: right is positive
-- Y axis: down is positive
-- Unit: pixels
-
-## Node Size Estimation
-
-The app auto-sizes nodes based on text content. To match:
-
-```
-FONT_SIZE = 32px
-LINE_HEIGHT = 1.5
-NODE_PADDING = 14px
-
-width  = maxLineTextWidth + NODE_PADDING * 2
-height = lineCount * FONT_SIZE * LINE_HEIGHT + NODE_PADDING * 2
-
-Character width approximation (at 32px font):
-  - English/ASCII: ~17.6px (FONT_SIZE * 0.55)
-  - CJK/fullwidth:  ~32px  (FONT_SIZE * 1.0)
-
-Minimum: width=100, height=76
-```
-
-## Instructions for Agents
-
-### Standard Workflow
-
-When asked to generate a `.prg` file, follow these steps:
-
-#### 1. Analyze the Source
-
-Understand the structure of the input data:
-
-- **Code repository**: Walk the file tree, parse imports/exports, extract function signatures
-- **Article/document**: Extract key concepts and their relationships
-- **API documentation**: Extract endpoints, models, and their connections
-- **Any graph-like data**: Identify nodes and edges
-
-#### 2. Decompose into Tree + Extra Edges
-
-**This is the critical step.** You must split the graph into:
-
-**a) A spanning tree** — Write as Markdown:
-
-- Choose the most natural hierarchy as the tree backbone
-- Use `#` heading levels for depth (max 6 levels)
-- Each heading becomes a TextNode
-- Heading text = node display text
-
-**b) Extra edges** — Write as JSON array:
-
-- All edges NOT in the spanning tree
-- Reference nodes by their exact heading text
-- Add meaningful labels via `text` field
-
-**Spanning tree selection tips:**
-
-- Prefer the hierarchy that humans would naturally read (e.g., folder structure for code)
-- BFS from the most important/central node gives good results
-- When in doubt, pick the tree that minimizes the number of extra edges
-
-#### 3. Generate the .prg File
-
-Write the `tree.md` and `edges.json` files, then run:
-
-```bash
-npx tsx md2prg.ts tree.md --edges edges.json -o output.prg
-```
-
-Working directory: the `md2prg/` subdirectory of this skill (ensure `npm install` has been run).
-
-If the tool is not available or deps are not installed, you can generate the stage JSON programmatically using the code below.
-
-### Programmatic Generation (without CLI)
-
-If you need to generate `.prg` files without the CLI tool, use this self-contained TypeScript code:
-
-```typescript
-import { randomUUID } from "node:crypto";
-
-// ============ Types ============
-
-interface MarkdownNode {
-  title: string;
-  content: string;
-  children: MarkdownNode[];
-}
-
-interface LayoutNode {
-  id: string;
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  children: string[];
-}
-
-interface ExtraEdge {
-  from: string;
-  to: string;
-  text?: string;
-}
-
-type StageObject = Record<string, unknown>;
-
-// ============ Markdown Parser ============
-
-function parseMarkdownToJSON(markdown: string): MarkdownNode[] {
-  const lines = markdown.split("\n");
-  const root: MarkdownNode[] = [];
-  const stack: { node: MarkdownNode; level: number }[] = [];
-
-  for (const line of lines) {
-    const titleMatch = line.match(/^(#+)\s*(.*)/);
-    if (titleMatch) {
-      const level = titleMatch[1].length;
-      const title = titleMatch[2].trim();
-      const newNode: MarkdownNode = { title, content: "", children: [] };
-
-      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
-        stack.pop();
-      }
-
-      if (stack.length === 0) {
-        root.push(newNode);
-      } else {
-        stack[stack.length - 1].node.children.push(newNode);
-      }
-
-      stack.push({ node: newNode, level });
-    } else if (line.trim()) {
-      if (stack.length > 0) {
-        const current = stack[stack.length - 1].node;
-        current.content += line + "\n";
-        current.content = current.content.trim();
-      }
-    }
-  }
-
-  return root;
-}
-
-// ============ Node Size Estimation ============
-
-function estimateNodeSize(text: string): { width: number; height: number } {
-  const FONT_SIZE = 32;
-  const LINE_HEIGHT = 1.5;
-  const NODE_PADDING = 14;
-
-  const lines = text.split("\n");
-  let maxLineWidth = 0;
-
-  for (const line of lines) {
-    let lineWidth = 0;
-    for (const char of line) {
-      const code = char.codePointAt(0) ?? 0;
-      const isWide =
-        (code >= 0x4e00 && code <= 0x9fff) ||
-        (code >= 0x3000 && code <= 0x303f) ||
-        (code >= 0x3040 && code <= 0x30ff) ||
-        (code >= 0xff00 && code <= 0xffef) ||
-        (code >= 0xac00 && code <= 0xd7af) ||
-        (code >= 0xf900 && code <= 0xfaff);
-      lineWidth += isWide ? FONT_SIZE : FONT_SIZE * 0.55;
-    }
-    maxLineWidth = Math.max(maxLineWidth, lineWidth);
-  }
-
-  return {
-    width: Math.max(Math.round(maxLineWidth + NODE_PADDING * 2), 100),
-    height: Math.max(Math.round(lines.length * FONT_SIZE * LINE_HEIGHT + NODE_PADDING * 2), 76),
-  };
-}
-
-// ============ Tree Layout Algorithm ============
-// Extracted from autoLayoutFastTreeMode in the Project Graph app
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-function mergeRects(rects: Rect[]): Rect {
-  if (rects.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
-  let minX = rects[0].x,
-    minY = rects[0].y;
-  let maxX = rects[0].x + rects[0].width,
-    maxY = rects[0].y + rects[0].height;
-  for (let i = 1; i < rects.length; i++) {
-    minX = Math.min(minX, rects[i].x);
-    minY = Math.min(minY, rects[i].y);
-    maxX = Math.max(maxX, rects[i].x + rects[i].width);
-    maxY = Math.max(maxY, rects[i].y + rects[i].height);
-  }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
-
-function moveSubtree(id: string, dx: number, dy: number, nodes: Map<string, LayoutNode>): void {
-  const n = nodes.get(id)!;
-  n.x += dx;
-  n.y += dy;
-  for (const c of n.children) moveSubtree(c, dx, dy, nodes);
-}
-
-function treeBounds(id: string, nodes: Map<string, LayoutNode>): Rect {
-  const n = nodes.get(id)!;
-  return mergeRects([
-    { x: n.x, y: n.y, width: n.width, height: n.height },
-    ...n.children.map((c) => treeBounds(c, nodes)),
-  ]);
-}
-
-function alignSiblings(childIds: string[], nodes: Map<string, LayoutNode>, gap = 20): void {
-  if (childIds.length <= 1) return;
-  const sorted = [...childIds].sort((a, b) => nodes.get(a)!.y - nodes.get(b)!.y);
-  const first = treeBounds(sorted[0], nodes);
-  let curY = first.y + first.height + gap;
-  for (let i = 1; i < sorted.length; i++) {
-    const r = treeBounds(sorted[i], nodes);
-    const dx = first.x - r.x,
-      dy = curY - r.y;
-    moveSubtree(sorted[i], dx, dy, nodes);
-    curY += r.height + gap;
-  }
-}
-
-function placeChildrenRight(parentId: string, childIds: string[], nodes: Map<string, LayoutNode>, gap = 150): void {
-  if (childIds.length === 0) return;
-  const p = nodes.get(parentId)!;
-  const childRects = childIds.map((c) => treeBounds(c, nodes));
-  const merged = mergeRects(childRects);
-  const targetCX = p.x + p.width + gap + merged.width / 2;
-  const dx = targetCX - (merged.x + merged.width / 2);
-  const dy = p.y + p.height / 2 - (merged.y + merged.height / 2);
-  for (const c of childIds) moveSubtree(c, dx, dy, nodes);
-}
-
-function autoLayoutRightwardTree(rootId: string, nodes: Map<string, LayoutNode>, hGap = 150, vGap = 20): void {
-  const root = nodes.get(rootId)!;
-  const origX = root.x,
-    origY = root.y;
-
-  const dfs = (id: string) => {
-    const n = nodes.get(id)!;
-    for (const c of n.children) dfs(c);
-    alignSiblings(n.children, nodes, vGap);
-    placeChildrenRight(id, n.children, nodes, hGap);
-  };
-
-  dfs(rootId);
-  const after = nodes.get(rootId)!;
-  moveSubtree(rootId, origX - after.x, origY - after.y, nodes);
-}
-
-// ============ Build Layout Graph from Markdown ============
-
-function buildLayoutGraph(mdNodes: MarkdownNode[]): { rootId: string; nodes: Map<string, LayoutNode> } {
-  const rootId = randomUUID();
-  const rootSize = estimateNodeSize("root");
-  const nodes = new Map<string, LayoutNode>([
-    [
-      rootId,
-      {
-        id: rootId,
-        text: "root",
-        x: 0,
-        y: 0,
-        width: rootSize.width,
-        height: rootSize.height,
-        children: [],
-      },
-    ],
-  ]);
-
-  let yIdx = 0;
-  const add = (md: MarkdownNode, parentId: string, depth: number) => {
-    const id = randomUUID();
-    const size = estimateNodeSize(md.title);
-    nodes.set(id, {
-      id,
-      text: md.title,
-      x: depth * 50,
-      y: yIdx * 100,
-      width: size.width,
-      height: size.height,
-      children: [],
-    });
-    yIdx++;
-    nodes.get(parentId)!.children.push(id);
-    for (const child of md.children) add(child, id, depth + 1);
-  };
-
-  for (const md of mdNodes) add(md, rootId, 0);
-  return { rootId, nodes };
-}
-
-// ============ Stage JSON Builder ============
-
-function roundToTwo(v: number): number {
-  return Number.isInteger(v) ? v : Number.parseFloat(v.toFixed(2));
-}
-
-function buildStage(rootId: string, nodes: Map<string, LayoutNode>, extraEdges: ExtraEdge[] = []): StageObject[] {
-  // DFS order for node indices
-  const ordered: string[] = [];
-  const visited = new Set<string>();
-  const dfs = (id: string) => {
-    if (visited.has(id)) return;
-    visited.add(id);
-    ordered.push(id);
-    for (const c of nodes.get(id)!.children) dfs(c);
-  };
-  dfs(rootId);
-  for (const [id] of nodes) if (!visited.has(id)) dfs(id);
-
-  const stage: StageObject[] = [];
-  const idToIdx = new Map<string, number>();
-
-  // TextNodes
-  for (const id of ordered) {
-    const n = nodes.get(id)!;
-    idToIdx.set(id, stage.length);
-    stage.push({
-      _: "TextNode",
-      uuid: n.id,
-      text: n.text,
-      collisionBox: {
-        _: "CollisionBox",
-        shapes: [
-          {
-            _: "Rectangle",
-            location: { _: "Vector", x: roundToTwo(n.x), y: roundToTwo(n.y) },
-            size: { _: "Vector", x: roundToTwo(n.width), y: roundToTwo(n.height) },
-          },
-        ],
-      },
-      color: { _: "Color", r: 0, g: 0, b: 0, a: 0 },
-      fontScaleLevel: 0,
-      sizeAdjust: "auto",
-    });
-  }
-
-  // Tree edges (right-to-left direction)
-  for (const id of ordered) {
-    const n = nodes.get(id)!;
-    const srcIdx = idToIdx.get(id)!;
-    for (const childId of n.children) {
-      const tgtIdx = idToIdx.get(childId)!;
-      stage.push({
-        _: "LineEdge",
-        uuid: randomUUID(),
-        text: "",
-        color: { _: "Color", r: 0, g: 0, b: 0, a: 0 },
-        lineType: "solid",
-        associationList: [{ $: `/${srcIdx}` }, { $: `/${tgtIdx}` }],
-        sourceRectangleRate: { _: "Vector", x: 0.99, y: 0.5 },
-        targetRectangleRate: { _: "Vector", x: 0.01, y: 0.5 },
-      });
-    }
-  }
-
-  // Extra edges (center-to-center direction)
-  const titleToIdx = new Map<string, number>();
-  for (let i = 0; i < stage.length; i++) {
-    const obj = stage[i];
-    if (obj._ === "TextNode" && typeof obj.text === "string" && !titleToIdx.has(obj.text)) {
-      titleToIdx.set(obj.text, i);
-    }
-  }
-  for (const edge of extraEdges) {
-    const fromIdx = titleToIdx.get(edge.from);
-    const toIdx = titleToIdx.get(edge.to);
-    if (fromIdx === undefined || toIdx === undefined) continue;
-    stage.push({
-      _: "LineEdge",
-      uuid: randomUUID(),
-      text: edge.text ?? "",
-      color: { _: "Color", r: 0, g: 0, b: 0, a: 0 },
-      lineType: "solid",
-      associationList: [{ $: `/${fromIdx}` }, { $: `/${toIdx}` }],
-      sourceRectangleRate: { _: "Vector", x: 0.5, y: 0.5 },
-      targetRectangleRate: { _: "Vector", x: 0.5, y: 0.5 },
-    });
-  }
-
-  return stage;
-}
-
-// ============ .prg File Packaging ============
-
-async function createPrgFile(stage: StageObject[]): Promise<Uint8Array> {
-  const { encode } = await import("@msgpack/msgpack");
-  const { ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } = await import("@zip.js/zip.js");
-
-  const uwriter = new Uint8ArrayWriter();
-  const writer = new ZipWriter(uwriter);
-  await writer.add("stage.msgpack", new Uint8ArrayReader(encode(stage)));
-  await writer.add("tags.msgpack", new Uint8ArrayReader(encode([])));
-  await writer.add("reference.msgpack", new Uint8ArrayReader(encode({ sections: {}, files: [] })));
-  await writer.add("metadata.msgpack", new Uint8ArrayReader(encode({ version: "18" })));
-  await writer.close();
-  return uwriter.getData();
-}
-
-// ============ Full Pipeline ============
-
-async function markdownToPrg(
-  markdown: string,
-  extraEdges: ExtraEdge[] = [],
-  options: { hGap?: number; vGap?: number } = {},
-): Promise<Uint8Array> {
-  const mdTree = parseMarkdownToJSON(markdown);
-  const { rootId, nodes } = buildLayoutGraph(mdTree);
-  autoLayoutRightwardTree(rootId, nodes, options.hGap ?? 150, options.vGap ?? 20);
-  const stage = buildStage(rootId, nodes, extraEdges);
-  return createPrgFile(stage);
-}
-```
-
-### Important Rules
-
-1. **UUIDs**: Always use `crypto.randomUUID()` for all uuid fields
-2. **Path references**: `$` indices MUST match actual positions in the stage array
-3. **Color `a: 0`**: Use transparent alpha for default theming
-4. **Version**: Always use `"18"` in metadata
-5. **Edge direction**: Tree edges use `(0.99, 0.5) → (0.01, 0.5)`, extra edges use `(0.5, 0.5) → (0.5, 0.5)`
-6. **Coordinate origin**: (0,0) is canvas center — layout around origin for best initial view
-7. **Node text matching**: Extra edges reference nodes by their exact display text. If two nodes share the same text, the first one (in DFS order) is used.
-8. **Minimum node size**: width=100, height=76 (matches app rendering)
-
-### Example: Full Pipeline
-
-Source: A small web app architecture
-
-**Step 1: tree.md**
-
-```markdown
-# Web App
-
-## Frontend
-
-### React Components
-
-### State Management
-
-### API Client
-
-## Backend
-
-### Express Server
-
-### Database
-
-#### PostgreSQL
-
-#### Redis
-
-### Auth Service
-```
-
-**Step 1: edges.json**
-
-```json
-[
-  { "from": "API Client", "to": "Express Server", "text": "HTTP requests" },
-  { "from": "Auth Service", "to": "State Management", "text": "JWT tokens" },
-  { "from": "Redis", "to": "Auth Service", "text": "session cache" }
-]
-```
-
-**Step 2 & 3: Generate**
-
-```bash
-cd md2prg  # inside this skill directory
-npx tsx md2prg.ts tree.md --edges edges.json -o webapp.prg
-```
-
-Result: A `.prg` file with a clean rightward tree layout, plus three extra cross-links shown as center-to-center connections.
