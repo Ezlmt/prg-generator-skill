@@ -40,12 +40,12 @@ function printUsage(): void {
       "  -o, --output <file>       Output file path (default: input filename with .prg extension)",
       "  --json                    Output stage JSON instead of .prg",
       "  --edges <file>            Extra edges JSON file (non-tree relationships)",
-      "  --layout <tree|dag>       Layout engine: 'tree' (rightward tree) or 'dag' (layered DAG, default: tree)",
+      "  --layout <tree|dag>       Layout engine: 'dag' (hierarchical DAG, default) or 'tree' (rightward tree)",
       "  --section-depth <number>  Auto-convert headings with children at depth <= N into Section containers (default: 0)",
       "  --auto-color              Automatically color-code top-level branches / Sections",
       "  --readme <file>           Embed a README.md file inside the .prg archive",
-      "  --gap <number>            Horizontal gap between parent-child / layers (default: 150)",
-      "  --spacing <number>        Vertical spacing between siblings (default: 24)",
+      "  --gap <number>            Horizontal gap between layers / sections (default: 340)",
+      "  --spacing <number>        Vertical spacing between siblings (default: 180)",
       "  --keep-synthetic-root     Keep a visible synthetic 'root' node even when there is a single top-level heading",
       "",
     ].join("\n"),
@@ -80,11 +80,11 @@ export function parseArgs(argv: string[]): CliOptions {
   let edgesPath: string | undefined;
   let readmePath: string | undefined;
   let json = false;
-  let gap = 150;
-  let spacing = 24;
-  let layout: "tree" | "dag" = "tree";
+  let gap = 340;
+  let spacing = 180;
+  let layout: "tree" | "dag" = "dag";
   let sectionDepth = 0;
-  let autoColor = false;
+  let autoColor = true;
   let keepSyntheticRoot = false;
 
   for (let i = 1; i < argv.length; i++) {
@@ -168,7 +168,7 @@ export function buildLayoutGraph(
   options: { sectionDepth?: number; autoColor?: boolean; keepSyntheticRoot?: boolean } = {},
 ): { rootId: string; nodesById: Map<string, LayoutNode> } {
   const sectionDepth = options.sectionDepth ?? 0;
-  const autoColor = options.autoColor ?? false;
+  const autoColor = options.autoColor ?? true;
   const keepSyntheticRoot = options.keepSyntheticRoot ?? false;
 
   const nodesById = new Map<string, LayoutNode>();
@@ -222,21 +222,14 @@ export function buildLayoutGraph(
     }
 
     for (let i = 0; i < markdownNode.children.length; i++) {
-      const nextBranchIdx = depth === 0 ? i : branchColorIndex;
+      const nextBranchIdx = depth <= 1 ? i : branchColorIndex;
       addNode(markdownNode.children[i], nodeId, depth + 1, nextBranchIdx);
     }
 
     return nodeId;
   };
 
-  // Single root optimization: if there's exactly 1 top-level heading and keepSyntheticRoot is false,
-  // use that heading directly as the root node!
-  if (markdownNodes.length === 1 && !keepSyntheticRoot) {
-    const rootId = addNode(markdownNodes[0], undefined, 1, 0);
-    return { rootId, nodesById };
-  }
-
-  // Otherwise create a synthetic root
+  // Create synthetic root for the canvas
   const rootId = randomUUID();
   const rootText = keepSyntheticRoot ? "root" : "__synthetic_root__";
   const rootSize = estimateNodeSize("root");
@@ -249,6 +242,46 @@ export function buildLayoutGraph(
     height: rootSize.height,
     children: [],
   });
+
+  // Top-level unwrapping: If there is a single H1 heading (# [section] Title or # Title)
+  // that wraps multiple Sections or DAG nodes, DO NOT create a giant outer wrapper Section box!
+  // Instead, turn the H1 into an independent Header Banner card at the top of the diagram,
+  // and promote its children to direct top-level canvas units under __synthetic_root__.
+  if (markdownNodes.length === 1 && !keepSyntheticRoot) {
+    const topNode = markdownNodes[0];
+    const hasSectionChildren = topNode.children.some((c) => c.nodeType === "section");
+    const shouldUnwrapTopLevel = topNode.nodeType === "section" || hasSectionChildren;
+
+    if (shouldUnwrapTopLevel && topNode.children.length > 0) {
+      // Create a standalone Header Banner card for the H1 title & overview details
+      const bannerId = randomUUID();
+      const bannerScale = topNode.fontScaleLevel ?? 1;
+      const bannerSize = estimateNodeSize(topNode.title, bannerScale, "text");
+      nodesById.set(bannerId, {
+        id: bannerId,
+        text: topNode.title,
+        x: 0,
+        y: 0,
+        width: bannerSize.width,
+        height: bannerSize.height,
+        children: [],
+        nodeType: "text",
+        color: topNode.color ?? SEMANTIC_COLORS.blue,
+        borderStyle: topNode.borderStyle ?? "solid",
+        fontScaleLevel: bannerScale,
+        details: topNode.details,
+        inlineEdges: topNode.inlineEdges,
+        isHeaderBanner: true,
+      });
+      nodesById.get(rootId)!.children.push(bannerId);
+
+      // Add all children directly to rootId as top-level canvas layout units
+      for (let i = 0; i < topNode.children.length; i++) {
+        addNode(topNode.children[i], rootId, 1, i);
+      }
+      return { rootId, nodesById };
+    }
+  }
 
   for (let i = 0; i < markdownNodes.length; i++) {
     addNode(markdownNodes[i], rootId, 1, i);
@@ -276,16 +309,19 @@ async function run(): Promise<void> {
   }
 
   if (options.layout === "dag") {
-    // Build title -> id map for DAG layout edge resolution
     const titleToId = new Map<string, string>();
     for (const [id, n] of nodesById) {
-      if (!titleToId.has(n.text)) titleToId.set(n.text, id);
+      if (n.text && n.text !== "__synthetic_root__" && !titleToId.has(n.text)) {
+        titleToId.set(n.text, id);
+      }
     }
     const dagEdges: DAGLayoutEdge[] = [];
     for (const e of [...inlineEdges, ...extraEdges]) {
       const fromId = titleToId.get(e.from);
       const toId = titleToId.get(e.to);
-      if (fromId && toId) dagEdges.push({ fromId, toId });
+      if (fromId && toId) {
+        dagEdges.push({ fromId, toId, text: e.text });
+      }
     }
     autoLayoutDAG(rootId, nodesById, dagEdges, {
       horizontalGap: options.gap,
@@ -299,36 +335,39 @@ async function run(): Promise<void> {
   }
 
   const stage = buildStageFromLayout(rootId, nodesById);
-
   if (extraEdges.length > 0) {
     addExtraEdgesToStage(stage, extraEdges);
   }
 
-  let readme: string | undefined;
-  if (options.readmePath) {
-    readme = await readFile(options.readmePath, "utf8");
+  // Ensure output directory exists
+  const outDir = path.dirname(options.outputPath);
+  if (outDir && outDir !== ".") {
+    await mkdir(outDir, { recursive: true });
   }
-
-  await mkdir(path.dirname(path.resolve(options.outputPath)), { recursive: true });
 
   if (options.json) {
-    await writeFile(options.outputPath, JSON.stringify(stage, null, 2), "utf8");
-  } else {
-    const prg = await createPrgFile(stage, { readme });
-    await writeFile(options.outputPath, Buffer.from(prg));
+    await writeFile(options.outputPath, `${JSON.stringify(stage, null, 2)}\n`, "utf8");
+    process.stdout.write(`Wrote ${options.outputPath} (${stage.length} stage objects)\n`);
+    return;
   }
 
+  let readmeContent: string | undefined;
+  if (options.readmePath) {
+    readmeContent = await readFile(options.readmePath, "utf8");
+  }
+
+  const prgBytes = await createPrgFile(stage, {
+    readme: readmeContent,
+  });
+  await writeFile(options.outputPath, Buffer.from(prgBytes));
   process.stdout.write(`Wrote ${options.outputPath} (${stage.length} stage objects)\n`);
 }
 
-// Only execute if invoked directly from CLI
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("md2prg.ts")) {
-  run().catch((error: unknown) => {
-    if (error instanceof Error) {
-      process.stderr.write(`md2prg error: ${error.message}\n`);
-    } else {
-      process.stderr.write(`md2prg error: ${String(error)}\n`);
-    }
-    process.exitCode = 1;
-  });
-}
+run().catch((error: unknown) => {
+  if (error instanceof Error) {
+    process.stderr.write(`md2prg error: ${error.message}\n`);
+  } else {
+    process.stderr.write(`md2prg error: ${String(error)}\n`);
+  }
+  process.exitCode = 1;
+});

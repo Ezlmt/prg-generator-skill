@@ -82,42 +82,54 @@ npx tsx repo2prg.ts /path/to/monorepo --mode packages -o monorepo.prg
 
 You can author rich architecture diagrams, concept maps, call graphs, or state machines using standard Markdown headings enhanced with directives and inline edges.
 
-### Markdown DSL Syntax Cheat Sheet
+### Markdown DSL Syntax Cheat Sheet & Granularity Best Practices
+
+> **CRITICAL Authoring Rules for Clean, Discrete Graphs**:
+> 1. **Do NOT put `[section]` on the top-level H1 heading (`# Title`)**: Leave `# Title` as a plain heading so `md2prg.ts` renders it as a sleek **Header Banner Card** centered above the diagram. Never wrap the entire universe inside one giant outer `Section` box!
+> 2. **Decompose Monolithic Cards into Fine-Grained Nodes**: Prefer **20–35+ discrete, focused `### Node` cards** connected by explicit directed edges (`->`, `~>`, `<->`) instead of 6–8 giant boxes stuffed with long bullet lists.
+> 3. **Hierarchical DAG + Boustrophedon Snake Layout**: By default (`--layout dag`), `md2prg.ts` runs a recursive Sugiyama Layered DAG algorithm BOTH inside every `Section` container AND across top-level Sections, automatically wrapping long chains into a clockwise Boustrophedon snake grid (`340px+` inter-section gap, `260px+` intra-section gap) and automatically upgrading straight lines that cross intermediate nodes into curved `ArcEdge`s.
 
 ```markdown
-# [section] System Architecture
-This top-level description becomes the Section's rich text details.
+# System Architecture Overview
+This top-level description becomes the Header Banner card's rich text details above the graph.
 
-## [section] Frontend Layer #blue
+## [section] 1. Frontend Layer #blue
 
-### Web App #green
+### Web App Entry #green
 Entry point: `src/main.tsx`
 - React 19 + Jotai state
-- Canvas 2D renderer
+-> Canvas 2D Renderer : Mounts stage canvas
+-> API Client : User actions
+
+### Canvas 2D Renderer #green
+- Hardware-accelerated HTML5 Canvas
+- Viewport culling & LOD
+
+### API Client #blue
 -> API Gateway : HTTPS / REST
-~> Auth Service : OAuth2 PKCE [arc:60]
+~> Auth Service : OAuth2 PKCE [arc:75]
 
-### [url:https://graphif.dev/docs] Official Docs #cyan
-Click this UrlNode in Project Graph to open documentation.
-
-## [section] Backend Services #purple
+## [section] 2. Backend Services #purple
 
 ### API Gateway #orange #dashed
 Handles routing and rate limiting.
 <-> Auth Service : Token validation
 
-### Auth Service
+### Auth Service #purple
 ```ts
 export async function verifyToken(jwt: string): Promise<Session>
 ```
 ..> Redis Cache : Session lookup
+
+### Redis Cache #cyan
+In-memory cluster for fast session & token state.
 ```
 
 ### Heading Directives
 
 | Directive / Tag | Effect |
 | :--- | :--- |
-| `[section]` or `{section}` | Renders this heading as a visual **`Section` container** wrapping all its sub-headings |
+| `[section]` or `{section}` | Renders this heading as a visual **`Section` container** wrapping all its sub-headings (use on `##` subsystems, NOT on `#` H1 document title) |
 | `[url:https://...]` | Renders this heading as a clickable **`UrlNode`** card |
 | `[latex]` | Renders this heading as a **`LatexNode`** math formula |
 | `#blue`, `#green`, `#red`, `#yellow`, `#purple`, `#orange`, `#cyan`, `#gray` | Sets node/Section color from the built-in semantic palette |
@@ -135,11 +147,11 @@ You can declare non-tree edges directly inside the source node's body (or provid
 
 | Syntax | Edge Class & Style | Use Case |
 | :--- | :--- | :--- |
-| `-> Target Node : label` | Solid `LineEdge` | Standard call / dependency / flow |
+| `-> Target Node : label` | Solid `LineEdge` (auto-upgrades to `ArcEdge` if obstacle detected) | Standard call / dependency / flow |
 | `..> Target Node : label` | Dashed `LineEdge` (`lineType: "dashed"`) | Optional / async / weak dependency |
-| `~> Target Node : label` | Curved `ArcEdge` (`offset: 60`) | Cross-layer jumps or callbacks that might cross other nodes |
-| `~> Target Node : label [arc:-80]` | Curved `ArcEdge` with custom offset | Negative offset bends right; positive bends left |
-| `<-> Target Node : label` | Pair of opposite `ArcEdge`s (`+50` / `-50`) | **Bidirectional relationship** without overlapping lines |
+| `~> Target Node : label` | Curved `ArcEdge` (`offset: 75`) | Cross-layer jumps or callbacks that might cross other nodes |
+| `~> Target Node : label [arc:-110]` | Curved `ArcEdge` with custom offset | Negative offset bends right; positive bends left |
+| `<-> Target Node : label` | Pair of opposite `ArcEdge`s (`+85` / `-85`) | **Bidirectional relationship** without overlapping lines |
 
 ### `md2prg.ts` CLI Options
 
@@ -148,13 +160,13 @@ npx tsx md2prg.ts <input.md> [options]
 
 Options:
   -o, --output <file>       Output file path (default: <input>.prg)
-  --layout <tree|dag>       'tree' (rightward tree, default) or 'dag' (layered Kahn DAG)
+  --layout <tree|dag>       'dag' (hierarchical Sugiyama DAG + Snake grid, default) or 'tree' (rightward tree)
   --section-depth <number>  Auto-convert headings with children at depth <= N into Section containers
-  --auto-color              Automatically color-code top-level branches / Sections
-  --edges <file>            Extra edges JSON file: [{ "from": "A", "to": "B", "text": "...", "edgeType": "arc", "offset": 60 }]
+  --auto-color              Automatically color-code top-level branches / Sections (default: true)
+  --edges <file>            Extra edges JSON file: [{ "from": "A", "to": "B", "text": "...", "edgeType": "arc", "offset": 75 }]
   --readme <file>           Embed a README.md file inside the .prg archive
-  --gap <number>            Horizontal gap between layers / parent-child (default: 150)
-  --spacing <number>        Vertical spacing between siblings (default: 24)
+  --gap <number>            Horizontal gap between layers / sections (default: 340)
+  --spacing <number>        Vertical spacing between siblings (default: 180)
   --json                    Output raw stage JSON array instead of .prg zip
 ```
 
